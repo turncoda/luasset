@@ -6,3 +6,5 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+mlua = { version = "0.10.2", features = ["lua54", "vendored"] }
+unreal_asset = { git = "https://github.com/astrotechies/unrealmodding", rev = "b04e558" }
