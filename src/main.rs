@@ -1,22 +1,35 @@
 use mlua::prelude::*;
 use unreal_asset::{engine_version::EngineVersion, Asset};
-use unreal_asset::properties::Property;
-use unreal_asset::exports::Export;
-use unreal_asset::exports::ExportBaseTrait;
-use unreal_asset::exports::ExportNormalTrait;
+//use unreal_asset::properties::Property;
+//use unreal_asset::types::PackageIndex;
+//use unreal_asset::exports::Export;
+//use unreal_asset::exports::ExportBaseTrait;
+//use unreal_asset::exports::ExportNormalTrait;
 use std::{
     fs::File,
     path::Path,
 };
 
-fn create_uasset(lua: &Lua) -> LuaResult<mlua::Table> {
+struct AssetUserData(Asset<File>);
+
+impl mlua::UserData for AssetUserData {
+    fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("num_exports", |_, this, ()| {
+            Ok(this.0.asset_data.exports.len())
+        });
+    }
+}
+
+fn create_uasset(lua: &Lua, name: String, userdata: AssetUserData) -> LuaResult<mlua::Table> {
     let uasset = lua.create_table()?;
-    let uasset_metatable: mlua::Table = lua.globals().get("uasset_metatable")?;
-    uasset.set_metatable(Some(uasset_metatable));
+    let uasset_mt: mlua::Table = lua.globals().get("uasset_mt")?;
+    uasset.set("_userdata", userdata)?;
+    uasset.set("_name", name)?;
+    uasset.set_metatable(Some(uasset_mt));
     Ok(uasset)
 }
 
-fn load(lua: &Lua, uasset_path_str: String) -> LuaResult<mlua::Table> {
+fn uasset_ctor(lua: &Lua, (_, uasset_path_str): (mlua::Table, String)) -> LuaResult<mlua::Table> {
     let uasset_path = Path::new(&uasset_path_str);
     let uasset_file = File::open(uasset_path)?;
     let uexp_path = uasset_path.with_extension("uexp");
@@ -28,19 +41,8 @@ fn load(lua: &Lua, uasset_path_str: String) -> LuaResult<mlua::Table> {
         EngineVersion::VER_UE5_1,
         None).unwrap();
 
-    let uasset = create_uasset(lua)?;
-    for (i, export) in asset.asset_data.exports.iter().enumerate() {
-        let export_table = lua.create_table()?;
-        let name = export.get_base_export().object_name.get_owned_content();
-        export_table.set("_name", name)?;
-        for prop in &export.get_normal_export().unwrap().properties {
-            if let Property::StructProperty(prop) = prop {
-                export_table.set(prop.name.get_owned_content(), 42)?;
-            }
-        }
-        uasset.set(i+1, export_table)?;
-    }
-    Ok(uasset)
+    let name = String::from(uasset_path.file_stem().unwrap().to_string_lossy());
+    create_uasset(lua, name, AssetUserData(asset))
 }
 
 fn main() -> LuaResult<()> {
@@ -48,36 +50,66 @@ fn main() -> LuaResult<()> {
 
     // library module
     let uasset_lib = lua.create_table()?;
-    uasset_lib.set("load", lua.create_function(load)?)?;
+
+    // make library module callable as a constructor
+    let uasset_lib_mt = lua.create_table()?;
+    uasset_lib_mt.set("__call", lua.create_function(uasset_ctor)?)?;
+    uasset_lib.set_metatable(Some(uasset_lib_mt));
 
     // metatable to be attached to every object of type uasset
-    let uasset_metatable = lua.create_table()?;
-    uasset_metatable.set("__index", &uasset_lib)?;
+    // methods are defined on the library module
+    let uasset_mt = lua.create_table()?;
+    uasset_mt.set("__index", &uasset_lib)?;
+
+    let export_mt = lua.create_table()?;
 
     lua.globals().set("uasset", &uasset_lib)?;
-    lua.globals().set("uasset_metatable", &uasset_metatable)?;
+    lua.globals().set("uasset_mt", &uasset_mt)?;
+    lua.globals().set("export_mt", &export_mt)?;
 
-    // uasset prototype definition
+    // export prototype
     lua.load("
-        uasset.add_actor = function(uasset, actor)
-            uasset[#uasset+1] = actor
+        export_mt.__tostring = function(self)
+            return string.format('export{parent=%s,index=%d}', self._parent,self._index)
+        end
+    ").exec()?;
+
+    // uasset prototype
+    lua.load("
+        uasset.get_export = function(self, index)
+            return setmetatable({_parent=self, _index=index}, export_mt)
+        end
+    ").exec()?;
+
+    lua.load("
+        uasset_mt.__index = function(self, key)
+            if type(key) == 'number' then
+                return uasset.get_export(self, key)
+            else
+                return function(...) uasset[key](self, table.unpack(arg)) end
+            end
         end").exec()?;
 
     lua.load("
-        uasset.get_actor = function(uasset, index)
-            return uasset[index]
+        uasset_mt.__tostring = function(self)
+            return string.format('uasset{name=\"%s\"}', self._name)
         end").exec()?;
 
     // sample script
     lua.load("
-        local my_map = uasset.load('tests/ExampleLevel.umap')
-        print(my_map:get_actor(1))
-        print(my_map[1])
-        print(my_map[1]._name)
-        print(my_map[1].RelativeLocation)
-        print(#my_map)
-        print(my_map:add_actor(2))
-        print(#my_map)
+        local my_map = uasset('tests/ExampleLevel.umap')
+        print(my_map)
+        print(my_map._userdata:num_exports())
+        print(my_map[2])
+        --print(my_map:get_actor(1).RelativeLocation)
+        --print(my_map:get_actor(1).RelativeLocation.RelativeLocation)
+        --print(my_map:get_actor(1).RelativeLocation.RelativeLocation.x)
+        --print(my_map[1])
+        --print(my_map[1]._name)
+        --print(my_map[1].RelativeLocation)
+        --print(#my_map)
+        --print(my_map:add_actor(2))
+        --print(#my_map)
     ").exec()?;
 
     Ok(())
