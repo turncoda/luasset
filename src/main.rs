@@ -9,6 +9,13 @@ use std::{
     path::Path,
 };
 
+fn create_uasset(lua: &Lua) -> LuaResult<mlua::Table> {
+    let uasset = lua.create_table()?;
+    let uasset_metatable: mlua::Table = lua.globals().get("uasset_metatable")?;
+    uasset.set_metatable(Some(uasset_metatable));
+    Ok(uasset)
+}
+
 fn load(lua: &Lua, uasset_path_str: String) -> LuaResult<mlua::Table> {
     let uasset_path = Path::new(&uasset_path_str);
     let uasset_file = File::open(uasset_path)?;
@@ -21,7 +28,7 @@ fn load(lua: &Lua, uasset_path_str: String) -> LuaResult<mlua::Table> {
         EngineVersion::VER_UE5_1,
         None).unwrap();
 
-    let uasset_table = lua.create_table()?;
+    let uasset = create_uasset(lua)?;
     for (i, export) in asset.asset_data.exports.iter().enumerate() {
         let export_table = lua.create_table()?;
         let name = export.get_base_export().object_name.get_owned_content();
@@ -31,29 +38,46 @@ fn load(lua: &Lua, uasset_path_str: String) -> LuaResult<mlua::Table> {
                 export_table.set(prop.name.get_owned_content(), 42)?;
             }
         }
-        // TODO set to actor handle/table
-        uasset_table.set(i+1, export_table)?;
+        uasset.set(i+1, export_table)?;
     }
-    Ok(uasset_table)
+    Ok(uasset)
 }
 
 fn main() -> LuaResult<()> {
     let lua = Lua::new();
 
-    let map_table = lua.create_table()?;
-    map_table.set(1, "one")?;
-    map_table.set("two", 2)?;
+    // library module
+    let uasset_lib = lua.create_table()?;
+    uasset_lib.set("load", lua.create_function(load)?)?;
 
-    let f = lua.create_function(load)?;
+    // metatable to be attached to every object of type uasset
+    let uasset_metatable = lua.create_table()?;
+    uasset_metatable.set("__index", &uasset_lib)?;
 
-    lua.globals().set("map_table", map_table)?;
-    lua.globals().set("load", f)?;
+    lua.globals().set("uasset", &uasset_lib)?;
+    lua.globals().set("uasset_metatable", &uasset_metatable)?;
+
+    // uasset prototype definition
+    lua.load("
+        uasset.add_actor = function(uasset, actor)
+            uasset[#uasset+1] = actor
+        end").exec()?;
 
     lua.load("
-        local my_map = load('tests/ExampleLevel.umap')
+        uasset.get_actor = function(uasset, index)
+            return uasset[index]
+        end").exec()?;
+
+    // sample script
+    lua.load("
+        local my_map = uasset.load('tests/ExampleLevel.umap')
+        print(my_map:get_actor(1))
         print(my_map[1])
         print(my_map[1]._name)
         print(my_map[1].RelativeLocation)
+        print(#my_map)
+        print(my_map:add_actor(2))
+        print(#my_map)
     ").exec()?;
 
     Ok(())
