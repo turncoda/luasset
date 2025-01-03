@@ -30,20 +30,58 @@ impl mlua::UserData for AssetUserData {
             let Some(export) = export.get_normal_export() else {
                 return Ok(false);
             };
-            // TODO handle multiple prop_names
-            let target_prop_name : String = prop_names.get(1)?;
+            let first_prop_name : String = prop_names.get(1)?;
+            let rest_prop_names = table_to_vec(&prop_names, 2, prop_names.len()?)?;
             for prop in &export.properties {
-                let prop_name = match prop {
-                    Property::StructProperty(prop) => &prop.name,
-                    _ => panic!("unhandled type"),
-                }.get_owned_content();
-                if prop_name == target_prop_name {
+                if prop_name(&prop) != first_prop_name {
+                    continue;
+                }
+                if prop_path_validation_helper(&rest_prop_names, prop) {
                     return Ok(true);
                 }
             }
             Ok(false)
         });
     }
+}
+
+fn table_to_vec(table: &mlua::Table, start: i64, end: i64) -> LuaResult<Vec<String>> {
+    let mut result = vec![];
+    for i in start..end+1 {
+        result.push(table.get(i)?);
+    }
+    Ok(result)
+}
+
+fn prop_name(prop: &Property) -> String {
+    match prop {
+        Property::StructProperty(prop) => &prop.name,
+        Property::VectorProperty(prop) => &prop.name,
+        _ => panic!("unhandled type"),
+    }.get_owned_content()
+}
+
+fn prop_path_validation_helper(names: &[String], prop: &Property) -> bool {
+    if names.len() == 0 {
+        return true;
+    }
+    let cur_name = &names[0];
+    match prop {
+        Property::StructProperty(prop) => {
+            for prop in &prop.value {
+                if prop_name(prop).eq(cur_name) {
+                    return prop_path_validation_helper(&names[1..], prop);
+                }
+            }
+        },
+        Property::VectorProperty(_) => {
+            if cur_name == "x" { return true };
+            if cur_name == "y" { return true };
+            if cur_name == "z" { return true };
+        },
+        _ => panic!("unhandled type"),
+    }
+    false
 }
 
 fn create_uasset(lua: &Lua, name: String, userdata: AssetUserData) -> LuaResult<mlua::Table> {
@@ -94,10 +132,37 @@ fn main() -> LuaResult<()> {
     lua.globals().set("uasset_mt", &uasset_mt)?;
     lua.globals().set("export_mt", &export_mt)?;
     lua.globals().set("prop_mt", &prop_mt)?;
+
     // prop prototype
     lua.load("
         prop_mt.__tostring = function(self)
-            return string.format('%s.%s', self._export, self._key)
+            result = tostring(self._export)
+            for i=1,#self._keys do
+                result = result .. '.' .. self._keys[i]
+            end
+            return result
+        end
+    ").exec()?;
+
+    lua.load("
+        prop_mt.__index = function(self, key)
+            -- make a copy of the existing keys
+            local tmp_keys = {}
+            for i=1,#self._keys do
+                tmp_keys[i] = self._keys[i]
+            end
+
+            -- append key to copy
+            tmp_keys[#tmp_keys+1] = key
+
+            -- check if key path exists in asset userdata
+            if not self._export._uasset._userdata:prop_names_are_valid(self._export._index, tmp_keys) then
+                return nil
+            end
+
+            -- update self
+            self._keys = tmp_keys
+            return self
         end
     ").exec()?;
 
@@ -113,7 +178,7 @@ fn main() -> LuaResult<()> {
             if not self._uasset._userdata:prop_names_are_valid(self._index, {key}) then
                 return nil
             end
-            return setmetatable({_export=self, _key=key}, prop_mt)
+            return setmetatable({_export=self, _keys={key}}, prop_mt)
         end
     ").exec()?;
 
@@ -149,15 +214,13 @@ fn main() -> LuaResult<()> {
         print(my_map[1])
         assert(my_map[9999] == nil) -- OOB access
         print(my_map[1].RelativeLocation)
-        --print(my_map:get_actor(1).RelativeLocation)
-        --print(my_map:get_actor(1).RelativeLocation.RelativeLocation)
-        --print(my_map:get_actor(1).RelativeLocation.RelativeLocation.x)
-        --print(my_map[1])
-        --print(my_map[1]._name)
-        --print(my_map[1].RelativeLocation)
-        --print(#my_map)
-        --print(my_map:add_actor(2))
-        --print(#my_map)
+        print(my_map[1].RelativeLocation.RelativeLocation)
+        print(my_map[1].RelativeLocation.RelativeLocation.w)
+        print(my_map[1].RelativeLocation.RelativeLocation.x)
+        print(my_map[1].RelativeLocation.RelativeLocation.y)
+        print(my_map[1].RelativeLocation.RelativeLocation.z)
+        print(my_map[1].RelativeLocation.notfound)
+        print(my_map[1].notfound)
     ").exec()?;
 
     Ok(())
