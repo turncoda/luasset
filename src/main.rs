@@ -1,3 +1,7 @@
+// TODO update vector property values using __newindex
+// TODO throw error on update property in struct using __newindex
+// TODO add test that traverses all exports
+// TODO implement test framework that compares binary output doing the same thing in Rust vs Lua
 use mlua::prelude::*;
 use unreal_asset::{engine_version::EngineVersion, Asset};
 use unreal_asset::properties::Property;
@@ -221,6 +225,14 @@ fn main() -> LuaResult<()> {
         print(my_map[1].RelativeLocation.RelativeLocation.z)
         print(my_map[1].RelativeLocation.notfound)
         print(my_map[1].notfound)
+        -- intended use case: duplicate actor 2
+        --my_map[#my_map+1] = my_map[2]
+        -- intended use case: transplant actor 3 from donor uasset
+        --my_map[#my_map+1] = donor[3]
+        -- intended use case: update property values in actor 2
+        --my_map[2].RelativeLocation.RelativeLocation.x = 5
+        -- invalid
+        --my_map[1].RelativeLocation = 1
     ").exec()?;
 
     Ok(())
