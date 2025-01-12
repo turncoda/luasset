@@ -1,7 +1,6 @@
 // TODO update vector property values using __newindex
 // TODO throw error on update property in struct using __newindex
 // TODO add test that traverses all exports
-// TODO implement test framework that compares binary output doing the same thing in Rust vs Lua
 use mlua::prelude::*;
 use unreal_asset::properties::Property;
 use unreal_asset::types::PackageIndex;
